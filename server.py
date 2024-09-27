@@ -11,11 +11,12 @@ DISCONNECT_MESSAGE = "!DISCONNECT"
 server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 server.bind(ADDR)
 
-clients = set()
+clients = {}
 clients_lock = threading.Lock()
 
 def handle_client(conn, addr):
     print(f"[NEW CONNECTION] {addr} Connected")
+    username = None
 
     try:
         connected = True
@@ -24,38 +25,56 @@ def handle_client(conn, addr):
             if not msg:
                 break
 
+            if msg.startswith("/setname "):
+                username = msg.split(" ", 1)[1]
+                with clients_lock:
+                    clients[username] = conn
+                print(f"[USERNAME SET] {username} for {addr}")
+                continue
+            
             if msg == DISCONNECT_MESSAGE:
                 connected = False
                 continue
-
-            timestamped_msg = f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {addr}: {msg}"
-            print(timestamped_msg)
-
-            with clients_lock:
-                for c in clients:
-                    if c != conn:  # Prevent sending the message back to the sender
-                        c.sendall(timestamped_msg.encode(FORMAT))
+            
+            timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            if username:
+                if msg.startswith("@"):  # Check for direct message
+                    try:
+                        target_user, direct_msg = msg[1:].split(" ", 1)
+                        formatted_msg = f"[{timestamp}] [DM from {username}] to [{target_user}]: {direct_msg}"
+                        with clients_lock:
+                            if target_user in clients:
+                                clients[target_user].sendall(formatted_msg.encode(FORMAT))
+                            else:
+                                conn.sendall(f"[ERROR] User {target_user} not found.".encode(FORMAT))
+                    except ValueError:
+                        conn.sendall(f"[ERROR] Invalid DM format. Use @username message.".encode(FORMAT))
+                else:
+                    formatted_msg = f"[{timestamp}] [{username}] {msg}"
+                    print(formatted_msg)
+                    with clients_lock:
+                        for client_conn in clients.values():
+                            if client_conn != conn:
+                                client_conn.sendall(formatted_msg.encode(FORMAT))
 
     except Exception as e:
-        print(f"An error occurred with {addr}: {e}")
+        print(f"[ERROR] {e}")
     finally:
         with clients_lock:
-            clients.remove(conn)
-
+            if username in clients:
+                del clients[username]
         conn.close()
         print(f"[DISCONNECTED] {addr}")
 
 def start():
-    print('[SERVER STARTED]!')
     server.listen()
+    print('[SERVER STARTED] Waiting for connections...')
     while True:
         try:
             conn, addr = server.accept()
-            with clients_lock:
-                clients.add(conn)
             thread = threading.Thread(target=handle_client, args=(conn, addr))
             thread.start()
         except Exception as e:
-            print(f"An error occurred while accepting a connection: {e}")
+            print(f"[ERROR] Connection handling error: {e}")
 
 start()
